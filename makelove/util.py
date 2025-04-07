@@ -3,8 +3,6 @@ import tempfile
 import atexit
 import os
 import re
-from distutils.util import strtobool
-
 import appdirs
 
 
@@ -46,11 +44,10 @@ def ask_yes_no(question, default=None):
         choice = input().lower()
         if choice == "" and default != None:
             return default
+        elif choice == "y" or choice == "n":
+            return choice == "y"
         else:
-            try:
-                return bool(strtobool(choice))
-            except ValueError:
-                sys.stdout.write("Invalid answer.\n")
+            sys.stdout.write("Invalid answer.\n")
 
 
 def prompt(prompt_str, default=None):
