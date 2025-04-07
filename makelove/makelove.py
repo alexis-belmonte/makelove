@@ -8,8 +8,8 @@ import subprocess
 from email.utils import formatdate
 import zipfile
 import re
-import pkg_resources
 
+from ._version import __version__
 from .config import get_config, all_targets, init_config_assistant
 from .hooks import execute_hook
 from .filelist import FileList
@@ -255,7 +255,7 @@ def main():
     args = parser.parse_args()
 
     if args.display_version:
-        print("makelove {}".format(pkg_resources.get_distribution("makelove").version))
+        print("makelove {}".format(__version__))
         sys.exit(0)
 
     if not os.path.isfile("main.lua"):
