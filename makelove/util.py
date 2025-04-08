@@ -3,6 +3,7 @@ import tempfile
 import atexit
 import os
 import re
+
 import appdirs
 
 
@@ -31,6 +32,19 @@ def parse_love_version(version_str):
     return parts
 
 
+def strtobool(value):
+    """Convert a string representation of truth to true (1) or false (0).
+    True values are y, yes, t, true, on and 1; false values are n, no, f, false, off and 0. Raises ValueError if val is anything else.
+    """
+    l = value.lower()
+    if l in ("y", "yes", "t", "true", "on", "1"):
+        return 1
+    elif l in ("n", "no", "f", "false", "off", "0"):
+        return 0
+    else:
+        raise ValueError("invalid truth value %r" % (value,))
+
+
 def ask_yes_no(question, default=None):
     if default == None:
         option_str = "[y/n]: "
@@ -44,10 +58,11 @@ def ask_yes_no(question, default=None):
         choice = input().lower()
         if choice == "" and default != None:
             return default
-        elif choice == "y" or choice == "n":
-            return choice == "y"
         else:
-            sys.stdout.write("Invalid answer.\n")
+            try:
+                return bool(strtobool(choice))
+            except ValueError:
+                sys.stdout.write("Invalid answer.\n")
 
 
 def prompt(prompt_str, default=None):
