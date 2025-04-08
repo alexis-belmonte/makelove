@@ -1,22 +1,11 @@
 import setuptools
-import re
-
-VERSION_FILE = "makelove/_version.py"
-with open(VERSION_FILE, "rt") as vf:
-    version_line = vf.read()
-    version_match = re.search(r"__version__ = ['\"]([^'\"]*)['\"]", version_line)
-    if version_match:
-        version_string = version_match.group(1)
-    else:
-        raise RuntimeError(f"Unable to parse version string in {VERSION_FILE}")
-
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setuptools.setup(
     name="makelove",
-    version=version_string,
+    version="0.0.13",
     author="Joel Schumacher",
     author_email="joelschum@gmail.com",
     description="A packaging tool for [löve](https://love2d.org) games",
