@@ -255,7 +255,7 @@ def main():
     args = parser.parse_args()
 
     if args.display_version:
-        print("makelove {}".format(importlib.meta.version("makelove"))
+        print("makelove {}".format(importlib.meta.version("makelove")))
         sys.exit(0)
 
     if not os.path.isfile("main.lua"):
