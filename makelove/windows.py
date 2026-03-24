@@ -241,10 +241,12 @@ def build_windows(config, version, target, target_directory, love_file_path):
     for k, v in archive_files.items():
         path = dest(v)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.isdir(k):
-            shutil.copytree(k, path)
-        else: # os.path.isfile(k):
+        if os.path.isfile(k):
             shutil.copyfile(k, path)
+        elif os.path.isdir(k):
+            shutil.copytree(k, path)
+        else:
+            sys.exit("Cannot copy archive file '{}'".format(k))
 
     if target in config and "shared_libraries" in config[target]:
         for f in config[target]["shared_libraries"]:
