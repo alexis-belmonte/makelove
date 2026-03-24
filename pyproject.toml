@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["makelove"]
+
+[project]
+name = "makelove"
+version = "0.0.14"
+dependencies = [
+  "Pillow>=7.0",
+  "appdirs>=1.4.3",
+  "toml>=0.10"
+]
+requires-python = ">=3.7"
+authors = [
+  {name = "Joel Schumacher", email = "joelschum@gmail.com"},
+  {name = "Josh Perry", email = "joshperry@outlook.com"},
+]
+maintainers = [
+  {name = "Joel Schumacher", email = "joelschum@gmail.com"},
+  {name = "Josh Perry", email = "joshperry@outlook.com"},
+]
+description = "A packaging tool for [löve](https://love2d.org) games"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Games/Entertainment :: Build Tools",
+]
+
+[project.urls]
+Repository = "https://github.com/pfirsich/makelove"
+
+[project.scripts]
+makelove = "makelove:main"
