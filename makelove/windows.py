@@ -241,11 +241,10 @@ def build_windows(config, version, target, target_directory, love_file_path):
     for k, v in archive_files.items():
         path = dest(v)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        print(k, path, v)
-        if os.path.isfile(k):
-            shutil.copyfile(k, path)
-        elif os.path.isdir(k):
-            shutil.copytree(k, path)
+        if os.path.isfile(v):
+            shutil.copyfile(v, path)
+        elif os.path.isdir(v):
+            shutil.copytree(v, path)
         else:
             sys.exit("Cannot copy archive file '{}'".format(k))
 
