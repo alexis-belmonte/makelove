@@ -170,7 +170,7 @@ def set_exe_metadata(exe_path, metadata, icon_file):
     if temp_ico_path:
         os.remove(temp_ico_path)
     if res.returncode != 0:
-        sys.exit("Could not set exe metadata:\n" + res.stderr.decode("utf-8"))
+        sys.exit("Could not set exe metadata:\n" + res.stdout.decode("utf-8") + " " + res.stderr.decode("utf-8"))
 
 
 def build_windows(config, version, target, target_directory, love_file_path):
