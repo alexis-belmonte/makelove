@@ -14,6 +14,7 @@ default_config_name = "makelove.toml"
 all_targets = ["win32", "win64", "appimage", "macos", "lovejs"]
 
 all_love_versions = [
+    "12.0",
     "11.5",
     "11.4",
     "11.3",
@@ -81,7 +82,10 @@ config_params = {
         }
     ),
     "linux": val.Section(
-        {"desktop_file_metadata": val.Dict(val.String(), val.String())}
+        {
+            "desktop_file_metadata": val.Dict(val.String(), val.String()),
+            "archive_files": val.Dict(val.Path(), val.Path()),
+        }
     ),
     "appimage": val.Section(
         {
