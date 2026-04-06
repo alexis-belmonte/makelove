@@ -189,13 +189,11 @@ def _get_love_download_info(version, platform):
         return url, filename
     
     elif platform in ("win32", "win64"):
-        # Windows
-        arch = "x86" if platform == "win32" else "x64"
-        
+        # Windows - use win32/win64 naming for modern versions
         if parsed_version[0] <= 8:
-            platform_name = f"win-{arch}"
+            platform_name = f"win-{platform}"
         else:
-            platform_name = arch
+            platform_name = platform  # win32 or win64
         
         # Handle version format
         version_str = version if version != "11.0" else "11.0.0"
