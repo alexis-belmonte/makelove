@@ -3,12 +3,15 @@ import tempfile
 import atexit
 import os
 import re
+import shutil
+from urllib.request import urlretrieve, urlopen, URLError
+import zipfile
 
 import appdirs
 
 
 def eprint(*args, **kwargs):
-    print(*args, **kwargs, file=sys.stderr)
+    print(*args, kwargs, file=sys.stderr)
 
 
 def _tempfile_deleter(path):
@@ -79,34 +82,158 @@ def prompt(prompt_str, default=None):
                 return default
 
 
-def get_default_love_binary_dir(version, platform):
-    return os.path.join(
-        appdirs.user_cache_dir("makelove"), "love-binaries", version, platform
-    )
+def get_love_cache_dir():
+    """Get the cache directory for LÖVE binaries."""
+    return os.path.join(appdirs.user_cache_dir("makelove"), "love")
 
 
-# TOOD: Think about hard-coding a big dictionary with download links, so I can error out if I know that there is no download link
-def get_download_url(version, platform):
-    # This function is intended to handle all the weird special cases and
-    # is therefore allowed to be ugly
+def get_love_binary_cache_path(version, platform):
+    """Get the cache path for a specific LÖVE version and platform."""
+    return os.path.join(get_love_cache_dir(), version, platform)
 
-    # Other platforms don't use this function
-    assert platform in ["win32", "win64", "macos"]
 
-    url = "https://github.com/love2d/love/releases/download/{}".format(version)
+def download_love_binary(version, platform):
+    """
+    Download LÖVE binaries for the specified version and platform.
+    Returns the path to the downloaded/extracted binaries.
+    
+    Platforms: win32, win64, macos, appimage
+    """
+    cache_path = get_love_binary_cache_path(version, platform)
+    
+    # Check if already cached
+    if os.path.isdir(cache_path) and _verify_love_cache(cache_path, platform):
+        print(f"Using cached LÖVE {version} for {platform}")
+        return cache_path
+    
+    print(f"Downloading LÖVE {version} for {platform}...")
+    
+    try:
+        # Download the binary
+        download_url, filename = _get_love_download_info(version, platform)
+        temp_file = tmpfile(suffix=".zip" if filename.endswith(".zip") else ".AppImage")
+        
+        print(f"  Downloading from: {download_url}")
+        urlretrieve(download_url, temp_file)
+        
+        # Create cache directory
+        os.makedirs(cache_path, exist_ok=True)
+        
+        # Extract/download to cache
+        if platform == "appimage":
+            # AppImage is already a single file, just move it
+            dest_path = os.path.join(cache_path, f"love-{version}-x86_64.AppImage")
+            shutil.move(temp_file, dest_path)
+        else:
+            # Extract zip file
+            with zipfile.ZipFile(temp_file, "r") as zip_ref:
+                zip_ref.extractall(cache_path)
+            
+            # Handle macOS special case (zip contains love.zip)
+            if platform == "macos":
+                macos_zip = os.path.join(cache_path, "love.zip")
+                if os.path.isfile(macos_zip):
+                    # Extract the inner zip
+                    temp_extract = tempfile.mkdtemp()
+                    with zipfile.ZipFile(macos_zip, "r") as inner_zip:
+                        inner_zip.extractall(temp_extract)
+                    # Move contents to cache_path
+                    for item in os.listdir(temp_extract):
+                        shutil.move(os.path.join(temp_extract, item), cache_path)
+                    shutil.rmtree(temp_extract)
+                    os.remove(macos_zip)
+        
+        print(f"  Cached at: {cache_path}")
+        return cache_path
+        
+    except Exception as e:
+        eprint(f"Error downloading LÖVE {version} for {platform}: {e}")
+        sys.exit(1)
+    finally:
+        # Clean up temp file if it still exists
+        if os.path.isfile(temp_file):
+            try:
+                os.remove(temp_file)
+            except:
+                pass
 
+
+def _get_love_download_info(version, platform):
+    """
+    Get the download URL and filename for a specific LÖVE version and platform.
+    Returns (url, filename) tuple.
+    """
+    base_url = f"https://github.com/love2d/love/releases/download/{version}"
+    
     parsed_version = parse_love_version(version)
-    if parsed_version[0] <= 8:
-        platform = {"win32": "win-x86", "win64": "win-x64", "macos": "macosx-ub"}[
-            platform
-        ]
-    elif platform == "macos" and (parsed_version[0] == 9 or parsed_version[0] == 10):
-        platform = "macosx-x64"
+    
+    if platform == "appimage":
+        # Linux AppImage
+        url = f"{base_url}/love-{version}-x86_64.AppImage"
+        filename = f"love-{version}-x86_64.AppImage"
+        return url, filename
+    
+    elif platform == "macos":
+        # macOS
+        if parsed_version[0] <= 8:
+            platform_name = "macosx-ub"
+        elif parsed_version[0] in (9, 10):
+            platform_name = "macosx-x64"
+        else:
+            platform_name = "macos"
+        
+        # Handle version format
+        version_str = version if version != "11.0" else "11.0.0"
+        url = f"{base_url}/love-{version_str}-{platform_name}.zip"
+        filename = f"love-{version_str}-{platform_name}.zip"
+        return url, filename
+    
+    elif platform in ("win32", "win64"):
+        # Windows
+        arch = "x86" if platform == "win32" else "x64"
+        
+        if parsed_version[0] <= 8:
+            platform_name = f"win-{arch}"
+        else:
+            platform_name = arch
+        
+        # Handle version format
+        version_str = version if version != "11.0" else "11.0.0"
+        url = f"{base_url}/love-{version_str}-{platform_name}.zip"
+        filename = f"love-{version_str}-{platform_name}.zip"
+        return url, filename
+    
+    else:
+        sys.exit(f"Unknown platform: {platform}")
 
-    if version == "11.0":
-        version = "11.0.0"
 
-    return "{}/love-{}-{}.zip".format(url, version, platform)
+def _verify_love_cache(cache_path, platform):
+    """Verify that the cached binaries are valid."""
+    if not os.path.isdir(cache_path):
+        return False
+    
+    if platform == "appimage":
+        appimage_path = os.path.join(cache_path, "love-*.AppImage")
+        import glob
+        return len(glob.glob(appimage_path)) > 0
+    elif platform == "macos":
+        # macOS cache should contain love.zip or extracted contents
+        return os.path.isfile(os.path.join(cache_path, "love.zip")) or                os.path.isdir(os.path.join(cache_path, "love.app"))
+    else:
+        # Windows - check for .exe file
+        exe_exists = any(f.endswith(".exe") for f in os.listdir(cache_path))
+        return exe_exists
+
+
+def get_default_love_binary_dir(version, platform):
+    """Backward compatibility function."""
+    return get_love_binary_cache_path(version, platform)
+
+
+def get_download_url(version, platform):
+    """Backward compatibility function - returns just the URL."""
+    url, _ = _get_love_download_info(version, platform)
+    return url
 
 
 def fuse_files(dest_path, *src_paths):

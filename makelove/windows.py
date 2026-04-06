@@ -9,7 +9,7 @@ import subprocess
 from PIL import Image, UnidentifiedImageError
 import appdirs
 
-from .util import get_default_love_binary_dir, get_download_url, tmpfile, eprint
+from .util import get_default_love_binary_dir, get_download_url, tmpfile, eprint, download_love_binary
 from .config import should_build_artifact
 from .hooks import execute_target_hook
 
@@ -25,31 +25,8 @@ def common_prefix(l):
 
 
 def download_love(version, platform):
-    target_path = get_default_love_binary_dir(version, platform)
-    print("Downloading love binaries to: '{}'".format(target_path))
-
-    os.makedirs(target_path, exist_ok=True)
-    try:
-        download_url = get_download_url(version, platform)
-        print("Downloading '{}'..".format(download_url))
-        with urlopen(download_url) as response:
-            with ZipFile(BytesIO(response.read())) as zipfile:
-                zipfile.extractall(target_path)
-    except URLError as exc:
-        eprint("Could not download löve: {}".format(exc))
-        eprint(
-            "If there is in fact no download on GitHub for this version, specify 'love_binaries' manually."
-        )
-        sys.exit(1)
-
-    # There is usually a single directory in the zip files
-    # Move the contents up one level, then delete the empty directory
-    subdir_path = os.path.join(target_path, os.listdir(target_path)[0])
-    for element in os.listdir(subdir_path):
-        shutil.move(os.path.join(subdir_path, element), target_path)
-    os.rmdir(subdir_path)
-
-    print("Download complete")
+    """Legacy function kept for backward compatibility."""
+    return download_love_binary(version, platform)
 
 
 def get_rcedit_path():
@@ -174,16 +151,15 @@ def set_exe_metadata(exe_path, metadata, icon_file):
 
 
 def build_windows(config, version, target, target_directory, love_file_path):
+    # Auto-download LÖVE binaries based on love_version
     if target in config and "love_binaries" in config[target]:
+        # Manual override still supported for advanced users
         love_binaries = config[target]["love_binaries"]
+        print(f"Using manually specified love_binaries: {love_binaries}")
     else:
         assert "love_version" in config
-        print("No love binaries specified for target {}".format(target))
-        love_binaries = get_default_love_binary_dir(config["love_version"], target)
-        if os.path.isdir(love_binaries):
-            print("Love binaries already present in '{}'".format(love_binaries))
-        else:
-            download_love(config["love_version"], target)
+        print(f"Auto-downloading LÖVE {config['love_version']} for {target}...")
+        love_binaries = download_love_binary(config["love_version"], target)
 
     temp_archive_dir = os.path.join(target_directory, "archive_temp")
     os.makedirs(temp_archive_dir)
@@ -241,13 +217,13 @@ def build_windows(config, version, target, target_directory, love_file_path):
     for k, v in archive_files.items():
         path = dest(v)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        print(k, "-", v, "=", path)
+
         if os.path.isfile(v):
             shutil.copyfile(v, path)
         elif os.path.isdir(v):
             shutil.copytree(v, path)
         else:
-            sys.exit("Cannot copy archive file '{}'".format(k))
+            sys.exit("Cannot copy archive file '{}' -> '{}'".format(v, path))
 
     if target in config and "shared_libraries" in config[target]:
         for f in config[target]["shared_libraries"]:

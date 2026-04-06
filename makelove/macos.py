@@ -10,30 +10,8 @@ from urllib.request import urlopen, urlretrieve, URLError
 
 from PIL import Image
 
-from .util import eprint, get_default_love_binary_dir, get_download_url
+from .util import eprint, get_default_love_binary_dir, get_download_url, download_love_binary
 from .hooks import execute_target_hook
-
-
-def download_love(version, platform):
-    """
-    Note, mac builds are stored as zip files because extracting them
-    would lose data about symlinks when building on windows
-    """
-    target_path = get_default_love_binary_dir(version, platform)
-    print("Downloading love binaries to: '{}'".format(target_path))
-
-    os.makedirs(target_path, exist_ok=True)
-    try:
-        download_url = get_download_url(version, platform)
-        print("Downloading '{}'..".format(download_url))
-        urlretrieve(download_url, os.path.join(target_path, "love.zip"))
-    except URLError as exc:
-        eprint("Could not download löve: {}".format(exc))
-        eprint(
-            "If there is in fact no download on GitHub for this version, specify 'love_binaries' manually."
-        )
-        sys.exit(1)
-    print("Download complete")
 
 
 def write_file(pkg, name, content):
@@ -158,16 +136,15 @@ def get_info_plist_content(config, version):
 
 
 def build_macos(config, version, target, target_directory, love_file_path):
+    # Auto-download LÖVE binaries based on love_version
     if target in config and "love_binaries" in config[target]:
+        # Manual override still supported for advanced users
         love_binaries = config[target]["love_binaries"]
+        print(f"Using manually specified love_binaries: {love_binaries}")
     else:
         assert "love_version" in config
-        print("No love binaries specified for target {}".format(target))
-        love_binaries = get_default_love_binary_dir(config["love_version"], target)
-        if os.path.isdir(love_binaries):
-            print("Love binaries already present in '{}'".format(love_binaries))
-        else:
-            download_love(config["love_version"], target)
+        print(f"Auto-downloading LÖVE {config['love_version']} for macos...")
+        love_binaries = download_love_binary(config["love_version"], "macos")
 
     src = os.path.join(love_binaries, "love.zip")
     dst = os.path.join(target_directory, f"{config['name']}-{target}.zip")
@@ -184,8 +161,35 @@ def build_macos(config, version, target, target_directory, love_file_path):
             archive_files.update(config["macos"]["archive_files"])
         
         written_archive_files = set()
+        root_files = {}  # Store files that should go to the export root
+        
         for src_path, dest_path in archive_files.items():
-            path = f"{config['name']}.app/Contents/Resources/{dest_path}"
+            # Handle path annotations
+            if dest_path.startswith("@content/"):
+                # Files go to Contents/MacOS/ (next to executable)
+                path = f"{config['name']}.app/Contents/MacOS/{dest_path[9:]}"
+            elif dest_path.startswith("@root/"):
+                # Files go to export root (same level as .app bundle)
+                # Store separately and add later
+                filename = dest_path[6:]  # Remove "@root/" prefix
+                if os.path.isfile(src_path):
+                    with open(src_path, "rb") as file:
+                        root_files[filename] = file.read()
+                elif os.path.isdir(src_path):
+                    directory = Path(src_path)
+                    for file_path in directory.glob("**/*"):
+                        if not file_path.is_file():
+                            continue
+                        with open(file_path, "rb") as file:
+                            relative = file_path.relative_to(src_path)
+                            root_files[f"{filename}/{relative}"] = file.read()
+                else:
+                    sys.exit(f"Cannot copy archive file '{src_path}'")
+                continue  # Skip to next iteration, root files handled separately
+            else:
+                # Default: files go to Contents/Resources/
+                path = f"{config['name']}.app/Contents/Resources/{dest_path}"
+            
             if os.path.isfile(src_path):
                 with open(src_path, "rb") as file:
                     app_zip.writestr(path, file.read())
@@ -196,9 +200,8 @@ def build_macos(config, version, target, target_directory, love_file_path):
                         continue
                     with open(file_path, "rb") as file:
                         relative = file_path.relative_to(src_path)
-                        path = f"{config['name']}.app/Contents/Resources/{dest_path}/{relative}"
-                        app_zip.writestr(path, file.read())
-                        written_archive_files.add(path)
+                        path_with_relative = f"{path}/{relative}"
+                        app_zip.writestr(path_with_relative, file.read())
             else:
                 sys.exit(f"Cannot copy archive file '{src_path}'")
             written_archive_files.add(path)
@@ -244,6 +247,10 @@ def build_macos(config, version, target, target_directory, love_file_path):
 
         loveZipKey = f"{config['name']}.app/Contents/Resources/{config['name']}.love"
         app_zip.writestr(loveZipKey, love_zip.read())
+        
+        # Add root files to the archive root (same level as .app bundle)
+        for filename, content in root_files.items():
+            app_zip.writestr(filename, content)
 
     # default behavior is to create an archive
     if target in config and "artifacts" in config[target] and "directory" in config[target]["artifacts"]:

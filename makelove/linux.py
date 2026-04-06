@@ -10,7 +10,7 @@ from collections import namedtuple
 from PIL import Image, UnidentifiedImageError
 import appdirs
 
-from .util import fuse_files, tmpfile, parse_love_version, ask_yes_no
+from .util import fuse_files, tmpfile, parse_love_version, ask_yes_no, download_love_binary
 from .config import all_love_versions, should_build_artifact
 from .hooks import execute_target_hook
 
@@ -20,62 +20,8 @@ def get_appimagetool_path():
 
 
 def download_love_appimage(version):
-    parsed_version = parse_love_version(version)
-
-    # If we're building for 11.4 or later, use the official appimages.
-    if (parsed_version[0], parsed_version[1]) >= (11, 4):
-        return download_official_appimage(version)
-
-    return download_legacy_appimage(version)
-
-
-def download_official_appimage(version):
-    url = f"https://api.github.com/repos/love2d/love/releases/tags/{version}"
-    asset_data = get_release_asset_list(url)
-
-    matching_asset = next(
-        (a for a in asset_data if a["name"] == f"love-{version}-x86_64.AppImage"), None
-    )
-
-    if not matching_asset:
-        sys.exit(f"Could not find AppImage to download for {version}!")
-
-    return download_appimage(matching_asset["browser_download_url"])
-
-
-def download_legacy_appimage(version):
-    latest_url = "https://api.github.com/repos/pfirsich/love-appimages/releases/latest"
-    asset_data = get_release_asset_list(latest_url)
-
-    Asset = namedtuple("Asset", ["name", "version", "download_url"])
-    appimages = []
-    for asset in asset_data:
-        m = re.match(r"love[-_]((?:\d+[_.])+\d+)[-_.].*", asset["name"])
-        if m:
-            appimage_version = parse_love_version(m.group(1))
-            appimages.append(
-                Asset(asset["name"], appimage_version, asset["browser_download_url"])
-            )
-
-    parsed_version = parse_love_version(version)
-    same_major = [
-        appimg for appimg in appimages if appimg.version[0] == parsed_version[0]
-    ]
-    if len(same_major) == 0:
-        sys.exit("Did not find an available AppImage with matching major version")
-    same_major.sort(key=lambda x: x.version, reverse=True)
-    download_asset = same_major[0]
-    if download_asset.version != parsed_version:
-        print("Could not find AppImage with matching version.")
-        print(
-            "The most current AppImage with the same major version is for version {}".format(
-                ".".join(map(str, download_asset.version))
-            )
-        )
-        if not ask_yes_no("Use {} instead?".format(download_asset.name), default=True):
-            sys.exit("Aborting.")
-
-    return download_appimage(download_asset.download_url)
+    """Legacy function - now uses the unified download_love_binary."""
+    return download_love_binary(version, "appimage")
 
 
 def get_release_asset_list(url):
@@ -86,17 +32,6 @@ def get_release_asset_list(url):
         sys.exit("Could not retrieve asset list: {}".format(exc))
 
     return data["assets"]
-
-
-def download_appimage(url):
-    try:
-        appimage_path = tmpfile(suffix=".AppImage")
-        print("Downloading {}..".format(url))
-        urlretrieve(url, appimage_path)
-        os.chmod(appimage_path, 0o755)
-        return appimage_path
-    except Exception as exc:
-        sys.exit("Could not download löve appimage from {}: {}".format(url, exc))
 
 
 def get_appimagetool():
@@ -122,16 +57,20 @@ def get_appimagetool():
 
 
 def build_linux(config, version, target, target_directory, love_file_path):
+    # Auto-download LÖVE AppImage based on love_version
     if target in config and "source_appimage" in config[target]:
+        # Manual override still supported for advanced users
         source_appimage = config[target]["source_appimage"]
+        print(f"Using manually specified source_appimage: {source_appimage}")
+        
         # We need to set the cwd to our extraction destination, so we need to turn this into an absolute path
         if not os.path.isabs(source_appimage):
             source_appimage = os.path.join(os.getcwd(), source_appimage)
     else:
         assert "love_version" in config
-        # Download it every time, in case it's updated (I might make them smaller)
-        # TODO: this shouldn't be necessary anymore if we're downloading from the official love repo
-        source_appimage = download_love_appimage(config["love_version"])
+        print(f"Auto-downloading LÖVE {config['love_version']} AppImage...")
+        appimage_cache_dir = download_love_binary(config["love_version"], "appimage")
+        source_appimage = os.path.join(appimage_cache_dir, f"love-{config['love_version']}-x86_64.AppImage")
 
     print("Extracting source AppImage '{}'..".format(source_appimage))
     ret = subprocess.run(
@@ -235,15 +174,27 @@ def build_linux(config, version, target, target_directory, love_file_path):
         for k, v in desktop_file_fields.items():
             f.write("{}={}\n".format(k, v))
 
-    # archive files
+    # archive files with path annotations
     archive_files = {}
     if "archive_files" in config:
         archive_files.update(config["archive_files"])
     if target in config and "archive_files" in config[target]:
         archive_files.update(config[target]["archive_files"])
+    if "linux" in config and "archive_files" in config["linux"]:
+        archive_files.update(config["linux"]["archive_files"])
 
     for k, v in archive_files.items():
-        path = appdirbin(v)
+        # Handle path annotations
+        if v.startswith("@content/"):
+            # Files go to squashfs-root/ (inner AppImage content root)
+            path = appdir(v[9:])  # Remove "@content/" prefix
+        elif v.startswith("@root/"):
+            # Files go to export root (same level as .AppImage)
+            path = os.path.join(target_directory, v[6:])  # Remove "@root/" prefix
+        else:
+            # Default: files go to bin/ directory
+            path = appdirbin(v)
+        
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.isfile(k):
             shutil.copyfile(k, path)
@@ -251,7 +202,6 @@ def build_linux(config, version, target, target_directory, love_file_path):
             shutil.copytree(k, path)
         else:
             sys.exit("Cannot copy archive file '{}'".format(k))
-
 
     # Shared libraries
     if target in config and "shared_libraries" in config[target]:
