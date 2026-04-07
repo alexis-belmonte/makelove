@@ -3,6 +3,7 @@ import os
 import plistlib
 import struct
 import sys
+import shutil
 from pathlib import Path
 from datetime import datetime
 from zipfile import ZipFile
@@ -146,7 +147,28 @@ def build_macos(config, version, target, target_directory, love_file_path):
         print(f"Auto-downloading LÖVE {config['love_version']} for macos...")
         love_binaries = download_love_binary(config["love_version"], "macos")
 
-    src = os.path.join(love_binaries, "love.zip")
+    # Determine source file - handle both old (love.zip) and new (love.app) formats
+    love_zip_path = os.path.join(love_binaries, "love.zip")
+    love_app_path = os.path.join(love_binaries, "love.app")
+    
+    if os.path.isfile(love_zip_path):
+        src = love_zip_path
+        use_love_app = False
+    elif os.path.isdir(love_app_path):
+        # Create a temporary zip from the .app bundle
+        import tempfile
+        temp_dir = tempfile.mkdtemp()
+        shutil.copytree(love_app_path, os.path.join(temp_dir, "love.app"))
+        src = os.path.join(temp_dir, "love.zip")
+        with ZipFile(src, "w") as tmp_zip:
+            for root, dirs, files in os.walk(os.path.join(temp_dir, "love.app")):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arc_name = os.path.relpath(file_path, temp_dir)
+                    tmp_zip.write(file_path, arc_name)
+        use_love_app = True
+    else:
+        sys.exit(f"Could not find love.zip or love.app in {love_binaries}")
     dst = os.path.join(target_directory, f"{config['name']}-{target}.zip")
     with open(src, "rb") as lovef, ZipFile(lovef) as love_binary_zip, open(
         dst, "wb+"
@@ -251,6 +273,10 @@ def build_macos(config, version, target, target_directory, love_file_path):
         # Add root files to the archive root (same level as .app bundle)
         for filename, content in root_files.items():
             app_zip.writestr(filename, content)
+    
+    # Clean up temporary zip if we created one from love.app
+    if use_love_app and os.path.isfile(src):
+        shutil.rmtree(os.path.dirname(src))
 
     # default behavior is to create an archive
     if target in config and "artifacts" in config[target] and "directory" in config[target]["artifacts"]:

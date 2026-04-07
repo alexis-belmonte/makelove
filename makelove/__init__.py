@@ -1,3 +1,3 @@
 from .makelove import main
 
-main()
+__all__ = ["main"]

@@ -124,24 +124,23 @@ def download_love_binary(version, platform):
             # AppImage is already a single file, just move it
             dest_path = os.path.join(cache_path, f"love-{version}-x86_64.AppImage")
             shutil.move(temp_file, dest_path)
+            os.chmod(dest_path, 0o755)  # Set execute permissions for AppImage
         else:
             # Extract zip file
             with zipfile.ZipFile(temp_file, "r") as zip_ref:
                 zip_ref.extractall(cache_path)
             
-            # Handle macOS special case (zip contains love.zip)
-            if platform == "macos":
-                macos_zip = os.path.join(cache_path, "love.zip")
-                if os.path.isfile(macos_zip):
-                    # Extract the inner zip
-                    temp_extract = tempfile.mkdtemp()
-                    with zipfile.ZipFile(macos_zip, "r") as inner_zip:
-                        inner_zip.extractall(temp_extract)
-                    # Move contents to cache_path
-                    for item in os.listdir(temp_extract):
-                        shutil.move(os.path.join(temp_extract, item), cache_path)
-                    shutil.rmtree(temp_extract)
-                    os.remove(macos_zip)
+            # Handle nested directory structure for Windows only
+            # macOS keeps love.zip inside the extracted folder (needed by macos.py)
+            if platform in ("win32", "win64"):
+                extracted_items = os.listdir(cache_path)
+                if len(extracted_items) == 1:
+                    nested_dir = os.path.join(cache_path, extracted_items[0])
+                    if os.path.isdir(nested_dir):
+                        # Move contents up one level
+                        for item in os.listdir(nested_dir):
+                            shutil.move(os.path.join(nested_dir, item), cache_path)
+                        os.rmdir(nested_dir)
         
         print(f"  Cached at: {cache_path}")
         return cache_path
