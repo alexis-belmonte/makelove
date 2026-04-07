@@ -6,6 +6,7 @@ import subprocess
 import re
 import json
 from collections import namedtuple
+import zipfile
 
 from PIL import Image, UnidentifiedImageError
 import appdirs
@@ -54,6 +55,33 @@ def get_appimagetool():
             return appimagetool_path
         except URLError as exc:
             sys.exit("Could not download appimagetool from {}: {}".format(url, exc))
+
+
+def extract_native_modules_from_love(love_file_path, target_dir):
+    """Extract native Lua modules (.so files) from .love archive to target directory.
+    
+    This is necessary because when LÖVE runs with an embedded game, its module loader
+    cannot find native C modules inside the embedded .love file. They need to be in
+    a location that's on package.path, like /lib/ inside the AppImage.
+    """
+    extracted = []
+    try:
+        with zipfile.ZipFile(love_file_path, 'r') as love_zip:
+            for name in love_zip.namelist():
+                # Look for .so files anywhere in the .love archive
+                if name.endswith('.so'):
+                    # Read bytes explicitly to avoid any corruption
+                    data = love_zip.read(name)
+                    # Extract to target_dir with just the filename (flatten structure)
+                    basename = os.path.basename(name)
+                    output_path = os.path.join(target_dir, basename)
+                    with open(output_path, 'wb') as f:
+                        f.write(data)
+                    if basename not in extracted:
+                        extracted.append(basename)
+    except Exception as e:
+        print(f"Warning: Could not extract native modules from {love_file_path}: {e}")
+    return extracted
 
 
 def build_linux(config, version, target, target_directory, love_file_path):
@@ -203,24 +231,31 @@ def build_linux(config, version, target, target_directory, love_file_path):
         else:
             sys.exit("Cannot copy archive file '{}'".format(k))
 
-    # Shared libraries
-    if target in config and "shared_libraries" in config[target]:
-        if os.path.isfile(appdir("usr/lib/liblove.so")):
-            # pfirsich-style AppImages
-            so_target_dir = appdir("usr/lib")
-        elif os.path.isfile(appdir("lib/liblove.so")):
-            # Official AppImages (since 11.4)
-            so_target_dir = appdir("lib/")
-        elif os.path.isfile(appdir("lib/liblove-{}.so".format(config["love_version"]))):
-            # Support for >= 11.5
-            so_target_dir = appdir("lib/")
-        else:
-            sys.exit(
-                "Could not find liblove.so in AppDir. The AppImage has an unknown format."
-            )
+    # Determine the library directory for native modules
+    if os.path.isfile(appdir("usr/lib/liblove.so")):
+        # pfirsich-style AppImages
+        so_target_dir = appdir("usr/lib")
+    elif os.path.isfile(appdir("lib/liblove.so")):
+        # Official AppImages (since 11.4)
+        so_target_dir = appdir("lib/")
+    elif os.path.isfile(appdir("lib/liblove-{}.so".format(config["love_version"]))):
+        # Support for >= 11.5
+        so_target_dir = appdir("lib/")
+    else:
+        sys.exit(
+            "Could not find liblove.so in AppDir. The AppImage has an unknown format."
+        )
 
+    # Shared libraries from config
+    if target in config and "shared_libraries" in config[target]:
         for f in config[target]["shared_libraries"]:
             shutil.copy(f, so_target_dir)
+
+    # Extract native Lua modules from .love file to bin/ (same dir as executable)
+    # This is necessary because embedded games' native modules aren't found by package.path
+    extracted_modules = extract_native_modules_from_love(love_file_path, appdirbin(""))
+    if extracted_modules:
+        print(f"Extracted native modules to {appdirbin('')}: {', '.join(extracted_modules)}")
 
     # Rebuild AppImage
     if should_build_artifact(config, target, "appimage", True):

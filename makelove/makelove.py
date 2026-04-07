@@ -123,6 +123,7 @@ def assemble_game_directory(args, config, game_directory):
     if os.path.isdir(game_directory):
         shutil.rmtree(game_directory)
     os.makedirs(game_directory)
+    
     file_list = FileList(".")
     for rule in config["love_files"]:
         if rule == "+::git-ls-tree::" or rule == "::git-ls-tree::":
@@ -138,6 +139,31 @@ def assemble_game_directory(args, config, game_directory):
             file_list.include(rule[1:])
         else:
             file_list.include(rule)
+
+    # Explicitly add files referenced in archive_files sections to the .love archive
+    # This ensures Lua modules like luasteam.so are available for require() calls
+    def add_archive_file_to_love(source_path):
+        if os.path.isfile(source_path):
+            dest_path = os.path.join(game_directory, os.path.basename(source_path))
+            shutil.copyfile(source_path, dest_path)
+    
+    # Global archive_files
+    if "archive_files" in config:
+        for source_path in config["archive_files"].keys():
+            add_archive_file_to_love(source_path)
+    
+    # Per-target and platform-specific archive_files
+    all_sections = []
+    for target_name in all_targets:
+        if target_name in config and "archive_files" in config[target_name]:
+            all_sections.append(config[target_name]["archive_files"])
+    for platform in ["windows", "macos", "linux"]:
+        if platform in config and "archive_files" in config[platform]:
+            all_sections.append(config[platform]["archive_files"])
+    
+    for section in all_sections:
+        for source_path in section.keys():
+            add_archive_file_to_love(source_path)
 
     if args.verbose:
         print(".love files:")
