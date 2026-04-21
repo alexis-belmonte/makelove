@@ -99,8 +99,11 @@ def build_linux(config, version, target, target_directory, love_file_path):
         )
         game_name = game_name.replace(" ", "")
 
-    # Copy shared_libraries (e.g. luasteam.so, libsteam_api.so) to usr/lib/ inside the AppDir.
-    # Native .so files must be on the filesystem — they cannot be loaded from inside the .love zip.
+    # Copy shared_libraries into the AppDir. The official LÖVE AppImage AppRun sets:
+    #   LD_LIBRARY_PATH=$APPDIR/lib/
+    #   LUA_CPATH=$APPDIR/lib/lua/5.1/?.so
+    # So: Lua C modules (e.g. luasteam.so) go to lib/lua/5.1/, dependency .so files
+    # (named lib*.so*) go to lib/ so LD_LIBRARY_PATH picks them up.
     shared_libraries = []
     if target in config and "shared_libraries" in config[target]:
         shared_libraries.extend(config[target]["shared_libraries"])
@@ -108,13 +111,21 @@ def build_linux(config, version, target, target_directory, love_file_path):
         shared_libraries.extend(config["linux"]["shared_libraries"])
 
     if shared_libraries:
-        os.makedirs(appdir("usr/lib"), exist_ok=True)
+        os.makedirs(appdir("lib/lua/5.1"), exist_ok=True)
+        os.makedirs(appdir("lib"), exist_ok=True)
         for lib_path in shared_libraries:
-            if os.path.isfile(lib_path):
-                print("Copying shared library {} to AppDir usr/lib/".format(lib_path))
-                shutil.copy2(lib_path, appdir("usr/lib"))
-            else:
+            if not os.path.isfile(lib_path):
                 sys.exit("Cannot find shared library: {}".format(lib_path))
+            basename = os.path.basename(lib_path)
+            if basename.startswith("lib"):
+                # Dependency .so — place in lib/ for LD_LIBRARY_PATH
+                dest = appdir("lib/{}".format(basename))
+                print("Copying {} to AppDir lib/".format(lib_path))
+            else:
+                # Lua C module — place in lib/lua/5.1/ for LUA_CPATH
+                dest = appdir("lib/lua/5.1/{}".format(basename))
+                print("Copying {} to AppDir lib/lua/5.1/".format(lib_path))
+            shutil.copy2(lib_path, dest)
 
     # Place the .love file in the AppDir and fuse or copy as needed
     if os.path.isfile(appdir("usr/bin/wrapper-love")):
