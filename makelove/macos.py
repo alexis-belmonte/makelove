@@ -11,7 +11,7 @@ from urllib.request import urlopen, urlretrieve, URLError
 
 from PIL import Image
 
-from .util import eprint, get_default_love_binary_dir, get_download_url, download_love_binary
+from .util import eprint, get_default_love_binary_dir, get_download_url, download_love_binary, get_love_binary_cache_path
 from .hooks import execute_target_hook
 
 
@@ -137,9 +137,11 @@ def get_info_plist_content(config, version):
 
 
 def build_macos(config, version, target, target_directory, love_file_path):
-    # Auto-download LÖVE binaries based on love_version
+    if os.path.exists(target_directory):
+        shutil.rmtree(target_directory)
+    os.makedirs(target_directory)
+
     if target in config and "love_binaries" in config[target]:
-        # Manual override still supported for advanced users
         love_binaries = config[target]["love_binaries"]
         print(f"Using manually specified love_binaries: {love_binaries}")
     else:
@@ -147,53 +149,37 @@ def build_macos(config, version, target, target_directory, love_file_path):
         print(f"Auto-downloading LÖVE {config['love_version']} for macos...")
         love_binaries = download_love_binary(config["love_version"], "macos")
 
-    # Determine source file - handle both old (love.zip) and new (love.app) formats
     love_zip_path = os.path.join(love_binaries, "love.zip")
-    love_app_path = os.path.join(love_binaries, "love.app")
-    
-    if os.path.isfile(love_zip_path):
-        src = love_zip_path
-        use_love_app = False
-    elif os.path.isdir(love_app_path):
-        # Create a temporary zip from the .app bundle
-        import tempfile
-        temp_dir = tempfile.mkdtemp()
-        shutil.copytree(love_app_path, os.path.join(temp_dir, "love.app"))
-        src = os.path.join(temp_dir, "love.zip")
-        with ZipFile(src, "w") as tmp_zip:
-            for root, dirs, files in os.walk(os.path.join(temp_dir, "love.app")):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arc_name = os.path.relpath(file_path, temp_dir)
-                    tmp_zip.write(file_path, arc_name)
-        use_love_app = True
-    else:
-        sys.exit(f"Could not find love.zip or love.app in {love_binaries}")
-    dst = os.path.join(target_directory, f"{config['name']}-{target}.zip")
-    with open(src, "rb") as lovef, ZipFile(lovef) as love_binary_zip, open(
-        dst, "wb+"
-    ) as outf, ZipFile(outf, mode="w") as app_zip, open(
-        love_file_path, "rb"
-    ) as love_zip:
+    if not os.path.isfile(love_zip_path):
+        cache_dir = get_love_binary_cache_path(config["love_version"], "macos")
+        sys.exit(
+            "Could not find love.zip in {}.\n"
+            "If you have an outdated cache, delete {} and retry.".format(
+                love_binaries, cache_dir
+            )
+        )
+
+    dst = os.path.join(target_directory, "{}-{}.zip".format(config["name"], target))
+    with open(love_zip_path, "rb") as lovef, ZipFile(lovef) as love_binary_zip, \
+         open(dst, "wb+") as outf, ZipFile(outf, mode="w") as app_zip, \
+         open(love_file_path, "rb") as love_zip_f:
 
         archive_files = {}
         if "archive_files" in config:
             archive_files.update(config["archive_files"])
         if "macos" in config and "archive_files" in config["macos"]:
             archive_files.update(config["macos"]["archive_files"])
-        
+
         written_archive_files = set()
-        root_files = {}  # Store files that should go to the export root
-        
+        root_files = {}
+
         for src_path, dest_path in archive_files.items():
-            # Handle path annotations
             if dest_path.startswith("@content/"):
-                # Files go to Contents/MacOS/ (next to executable)
-                path = f"{config['name']}.app/Contents/MacOS/{dest_path[9:]}"
+                # Files go to Contents/MacOS/ (next to the love executable)
+                path = "{}.app/Contents/MacOS/{}".format(config["name"], dest_path[9:])
             elif dest_path.startswith("@root/"):
-                # Files go to export root (same level as .app bundle)
-                # Store separately and add later
-                filename = dest_path[6:]  # Remove "@root/" prefix
+                # Files go to the zip root (same level as the .app bundle)
+                filename = dest_path[6:]
                 if os.path.isfile(src_path):
                     with open(src_path, "rb") as file:
                         root_files[filename] = file.read()
@@ -204,14 +190,14 @@ def build_macos(config, version, target, target_directory, love_file_path):
                             continue
                         with open(file_path, "rb") as file:
                             relative = file_path.relative_to(src_path)
-                            root_files[f"{filename}/{relative}"] = file.read()
+                            root_files["{}/{}".format(filename, relative)] = file.read()
                 else:
-                    sys.exit(f"Cannot copy archive file '{src_path}'")
-                continue  # Skip to next iteration, root files handled separately
+                    sys.exit("Cannot copy archive file '{}'".format(src_path))
+                continue
             else:
                 # Default: files go to Contents/Resources/
-                path = f"{config['name']}.app/Contents/Resources/{dest_path}"
-            
+                path = "{}.app/Contents/Resources/{}".format(config["name"], dest_path)
+
             if os.path.isfile(src_path):
                 with open(src_path, "rb") as file:
                     app_zip.writestr(path, file.read())
@@ -222,65 +208,51 @@ def build_macos(config, version, target, target_directory, love_file_path):
                         continue
                     with open(file_path, "rb") as file:
                         relative = file_path.relative_to(src_path)
-                        path_with_relative = f"{path}/{relative}"
-                        app_zip.writestr(path_with_relative, file.read())
+                        app_zip.writestr("{}/{}".format(path, relative), file.read())
             else:
-                sys.exit(f"Cannot copy archive file '{src_path}'")
+                sys.exit("Cannot copy archive file '{}'".format(src_path))
             written_archive_files.add(path)
 
         for zipinfo in love_binary_zip.infolist():
             if not zipinfo.filename.startswith("love.app/"):
-                eprint("Got bad or unxpexpectedly formatted love zip file")
+                eprint("Got bad or unexpectedly formatted love zip file")
                 sys.exit(1)
 
-            # for getting files out of the original love archive
             orig_filename = zipinfo.filename
 
-            # rename app from "love.app" to "cool game.app"
-            zipinfo.filename = config["name"] + zipinfo.filename[len("love") :]
+            # Rename app from "love.app" to the game name
+            zipinfo.filename = config["name"] + zipinfo.filename[len("love"):]
 
-            # makes the modification time on the app correct
             zipinfo.date_time = tuple(datetime.now().timetuple()[:6])
 
             if zipinfo.filename in written_archive_files:
-                # Skip archive files to make it possible to provide replacements
-                # for files from love_binary_zip.
                 continue
             elif orig_filename == "love.app/Contents/Resources/GameIcon.icns":
-                continue  # not needed for game distributions
+                continue
             elif orig_filename == "love.app/Contents/Resources/Assets.car":
-                continue  # not needed for game distributions
+                continue
             elif orig_filename == "love.app/Contents/Resources/OS X AppIcon.icns":
-                # hack: change name to make macos pick up the icon
-                zipinfo = f"{config['name']}.app/Contents/Resources/icon.icns"
-
+                zipinfo = "{}.app/Contents/Resources/icon.icns".format(config["name"])
                 content = get_game_icon_content(config)
                 if not content:
                     content = love_binary_zip.read(orig_filename)
             elif orig_filename == "love.app/Contents/Info.plist":
-                app_zip.writestr(
-                    zipinfo.filename, get_info_plist_content(config, version)
-                )
+                app_zip.writestr(zipinfo.filename, get_info_plist_content(config, version))
                 continue
             else:
                 content = love_binary_zip.read(orig_filename)
 
             app_zip.writestr(zipinfo, content)
 
-        loveZipKey = f"{config['name']}.app/Contents/Resources/{config['name']}.love"
-        app_zip.writestr(loveZipKey, love_zip.read())
-        
-        # Add root files to the archive root (same level as .app bundle)
+        # Place the pre-built .love in Contents/Resources/
+        love_zip_key = "{}.app/Contents/Resources/{}.love".format(config["name"], config["name"])
+        app_zip.writestr(love_zip_key, love_zip_f.read())
+
         for filename, content in root_files.items():
             app_zip.writestr(filename, content)
-    
-    # Clean up temporary zip if we created one from love.app
-    if use_love_app and os.path.isfile(src):
-        shutil.rmtree(os.path.dirname(src))
 
-    # default behavior is to create an archive
     if target in config and "artifacts" in config[target] and "directory" in config[target]["artifacts"]:
-        unzip_dst = os.path.join(target_directory, f"{config['name']}-{target}")
+        unzip_dst = os.path.join(target_directory, "{}-{}".format(config["name"], target))
         with ZipFile(dst, "r") as zip_ref:
             zip_ref.extractall(unzip_dst)
         os.remove(dst)

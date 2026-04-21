@@ -151,15 +151,17 @@ def set_exe_metadata(exe_path, metadata, icon_file):
 
 
 def build_windows(config, version, target, target_directory, love_file_path):
-    # Auto-download LÖVE binaries based on love_version
     if target in config and "love_binaries" in config[target]:
-        # Manual override still supported for advanced users
         love_binaries = config[target]["love_binaries"]
         print(f"Using manually specified love_binaries: {love_binaries}")
     else:
         assert "love_version" in config
         print(f"Auto-downloading LÖVE {config['love_version']} for {target}...")
         love_binaries = download_love_binary(config["love_version"], target)
+
+    if os.path.exists(target_directory):
+        shutil.rmtree(target_directory)
+    os.makedirs(target_directory)
 
     temp_archive_dir = os.path.join(target_directory, "archive_temp")
     os.makedirs(temp_archive_dir)
@@ -168,24 +170,19 @@ def build_windows(config, version, target, target_directory, love_file_path):
     dest = lambda x: os.path.join(temp_archive_dir, x)
     copy = lambda x: shutil.copyfile(src(x), dest(x))
 
-    if not os.path.isfile(src("love_orig.exe")):
-        # Copy metadata too, because we are making a backup
-        shutil.copy2(src("love.exe"), src("love_orig.exe"))
-
     target_exe_path = dest("{}.exe".format(config["name"]))
+    shutil.copy2(src("love.exe"), target_exe_path)
 
     if can_set_metadata(sys.platform):
         prepare_rcedit()
 
         metadata = get_exe_metadata(config, version)
 
-        # Default value is "löve.exe" of course.
-        # This value is used to determine if an executable has been renamed
         if not "OriginalFilename" in metadata:
             metadata["OriginalFilename"] = os.path.basename(target_exe_path)
 
         set_exe_metadata(
-            src("love.exe"), metadata, config.get("icon_file", None),
+            target_exe_path, metadata, config.get("icon_file", None),
         )
     else:
         print(
@@ -194,40 +191,34 @@ def build_windows(config, version, target, target_directory, love_file_path):
         )
         print("If you are using a POSIX-compliant system, try installing WINE.")
 
-    with open(target_exe_path, "wb") as fused:
-        with open(src("love.exe"), "rb") as loveExe:
-            with open(love_file_path, "rb") as loveZip:
-                fused.write(loveExe.read())
-                fused.write(loveZip.read())
+    # Fuse the pre-built .love to the executable (LÖVE's built-in mechanism)
+    with open(target_exe_path, "ab") as exe:
+        with open(love_file_path, "rb") as love:
+            exe.write(love.read())
 
     copy("license.txt")
     for f in os.listdir(love_binaries):
         if f.endswith(".dll"):
             copy(f)
 
+    # Copy archive_files (DLLs, steam_appid.txt, etc.) next to the executable
     archive_files = {}
     if "archive_files" in config:
         archive_files.update(config["archive_files"])
     if "windows" in config and "archive_files" in config["windows"]:
         archive_files.update(config["windows"]["archive_files"])
-    # also add win32/win64 files
     if target in config and "archive_files" in config[target]:
         archive_files.update(config[target]["archive_files"])
 
     for k, v in archive_files.items():
         path = dest(v)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-
         if os.path.isfile(k):
             shutil.copyfile(k, path)
         elif os.path.isdir(k):
             shutil.copytree(k, path)
         else:
-            sys.exit("Cannot copy archive file '{}' -> '{}'".format(k, path))
-
-    if target in config and "shared_libraries" in config[target]:
-        for f in config[target]["shared_libraries"]:
-            shutil.copyfile(f, dest(os.path.basename(f)))
+            sys.exit("Cannot copy archive file '{}'".format(k))
 
     if should_build_artifact(config, target, "archive", True):
         archive_path = os.path.join(

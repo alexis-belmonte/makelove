@@ -57,41 +57,15 @@ def get_appimagetool():
             sys.exit("Could not download appimagetool from {}: {}".format(url, exc))
 
 
-def extract_native_modules_from_love(love_file_path, target_dir):
-    """Extract native Lua modules (.so files) from .love archive to target directory.
-    
-    This is necessary because when LÖVE runs with an embedded game, its module loader
-    cannot find native C modules inside the embedded .love file. They need to be in
-    a location that's on package.path, like /lib/ inside the AppImage.
-    """
-    extracted = []
-    try:
-        with zipfile.ZipFile(love_file_path, 'r') as love_zip:
-            for name in love_zip.namelist():
-                # Look for .so files anywhere in the .love archive
-                if name.endswith('.so'):
-                    # Read bytes explicitly to avoid any corruption
-                    data = love_zip.read(name)
-                    # Extract to target_dir with just the filename (flatten structure)
-                    basename = os.path.basename(name)
-                    output_path = os.path.join(target_dir, basename)
-                    with open(output_path, 'wb') as f:
-                        f.write(data)
-                    if basename not in extracted:
-                        extracted.append(basename)
-    except Exception as e:
-        print(f"Warning: Could not extract native modules from {love_file_path}: {e}")
-    return extracted
-
 
 def build_linux(config, version, target, target_directory, love_file_path):
-    # Auto-download LÖVE AppImage based on love_version
+    if os.path.exists(target_directory):
+        shutil.rmtree(target_directory)
+    os.makedirs(target_directory)
+
     if target in config and "source_appimage" in config[target]:
-        # Manual override still supported for advanced users
         source_appimage = config[target]["source_appimage"]
         print(f"Using manually specified source_appimage: {source_appimage}")
-        
-        # We need to set the cwd to our extraction destination, so we need to turn this into an absolute path
         if not os.path.isabs(source_appimage):
             source_appimage = os.path.join(os.getcwd(), source_appimage)
     else:
@@ -111,8 +85,6 @@ def build_linux(config, version, target, target_directory, love_file_path):
 
     appdir_path = os.path.join(target_directory, "squashfs-root")
     appdir = lambda x: os.path.join(appdir_path, x)
-    appdirbin_path = os.path.join(appdir_path, "bin")
-    appdirbin = lambda x: os.path.join(appdirbin_path, x)
 
     game_name = config["name"]
     if " " in game_name:
@@ -127,34 +99,72 @@ def build_linux(config, version, target, target_directory, love_file_path):
         )
         game_name = game_name.replace(" ", "")
 
-    # Copy .love into AppDir
+    # Copy shared_libraries (e.g. luasteam.so, libsteam_api.so) to usr/lib/ inside the AppDir.
+    # Native .so files must be on the filesystem — they cannot be loaded from inside the .love zip.
+    shared_libraries = []
+    if target in config and "shared_libraries" in config[target]:
+        shared_libraries.extend(config[target]["shared_libraries"])
+    if "linux" in config and "shared_libraries" in config["linux"]:
+        shared_libraries.extend(config["linux"]["shared_libraries"])
+
+    if shared_libraries:
+        os.makedirs(appdir("usr/lib"), exist_ok=True)
+        for lib_path in shared_libraries:
+            if os.path.isfile(lib_path):
+                print("Copying shared library {} to AppDir usr/lib/".format(lib_path))
+                shutil.copy2(lib_path, appdir("usr/lib"))
+            else:
+                sys.exit("Cannot find shared library: {}".format(lib_path))
+
+    # Place the .love file in the AppDir and fuse or copy as needed
     if os.path.isfile(appdir("usr/bin/wrapper-love")):
-        # pfirsich-style AppImages - > simply copy the love file into the image
+        # pfirsich-style AppImages — copy .love file next to the wrapper
+        dest_love = appdir("usr/bin/{}.love".format(config["name"]))
         print("Copying {} to {}".format(love_file_path, appdir("usr/bin")))
-        shutil.copy2(love_file_path, appdir("usr/bin"))
+        shutil.copy2(love_file_path, dest_love)
         desktop_exec = "wrapper-love %F"
     elif os.path.isfile(appdir("bin/love")):
-        # Official AppImages (since 11.4) -> fuse the .love file to the love binary
-        fused_exe_path = appdir(f"bin/{game_name}")
-        print(
-            "Fusing {} and {} into {}".format(
-                appdir("bin/love"), love_file_path, fused_exe_path
-            )
-        )
+        # Official AppImages (since 11.4) — fuse .love to the love binary
+        fused_exe_path = appdir("bin/{}".format(game_name))
+        print("Fusing {} and {} into {}".format(appdir("bin/love"), love_file_path, fused_exe_path))
         fuse_files(fused_exe_path, appdir("bin/love"), love_file_path)
         os.chmod(fused_exe_path, 0o755)
         os.remove(appdir("bin/love"))
 
-        # rename back to bin/love so love.sh can pick it up
+        # Rename back to bin/love so love.sh can pick it up
         parsed_version = parse_love_version(config["love_version"])
         if (parsed_version[0], parsed_version[1]) >= (11, 4):
             os.rename(fused_exe_path, appdir("bin/love"))
 
-        desktop_exec = f"{game_name} %f"
+        desktop_exec = "{} %f".format(game_name)
     else:
         sys.exit(
             "Could not find love executable in AppDir. The AppImage has an unknown format."
         )
+
+    # Copy archive_files (e.g. steam_appid.txt) into the AppDir.
+    # @content/<name> places the file next to the love binary (bin/).
+    # Default (no annotation) places the file in usr/share/.
+    archive_files = {}
+    if "archive_files" in config:
+        archive_files.update(config["archive_files"])
+    if "linux" in config and "archive_files" in config["linux"]:
+        archive_files.update(config["linux"]["archive_files"])
+    if target in config and "archive_files" in config[target]:
+        archive_files.update(config[target]["archive_files"])
+
+    for src_path, dest_name in archive_files.items():
+        if dest_name.startswith("@content/"):
+            dest_file = appdir("bin/{}".format(dest_name[9:]))
+        else:
+            dest_file = appdir("usr/share/{}".format(dest_name))
+        os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+        if os.path.isfile(src_path):
+            shutil.copy2(src_path, dest_file)
+        elif os.path.isdir(src_path):
+            shutil.copytree(src_path, dest_file)
+        else:
+            sys.exit("Cannot copy archive file '{}'".format(src_path))
 
     # Copy icon
     icon_file = config.get("icon_file", None)
@@ -189,10 +199,8 @@ def build_linux(config, version, target, target_directory, love_file_path):
         "Exec": desktop_exec,
         "Categories": "Game;",
         "Terminal": "false",
-        "Icon": "love",
+        "Icon": game_name,
     }
-    if icon_file:
-        desktop_file_fields["Icon"] = game_name
 
     if "linux" in config and "desktop_file_metadata" in config["linux"]:
         desktop_file_fields.update(config["linux"]["desktop_file_metadata"])
@@ -202,60 +210,6 @@ def build_linux(config, version, target, target_directory, love_file_path):
         for k, v in desktop_file_fields.items():
             f.write("{}={}\n".format(k, v))
 
-    # archive files with path annotations
-    archive_files = {}
-    if "archive_files" in config:
-        archive_files.update(config["archive_files"])
-    if target in config and "archive_files" in config[target]:
-        archive_files.update(config[target]["archive_files"])
-    if "linux" in config and "archive_files" in config["linux"]:
-        archive_files.update(config["linux"]["archive_files"])
-
-    for k, v in archive_files.items():
-        # Handle path annotations
-        if v.startswith("@content/"):
-            # Files go to squashfs-root/ (inner AppImage content root)
-            path = appdir(v[9:])  # Remove "@content/" prefix
-        elif v.startswith("@root/"):
-            # Files go to export root (same level as .AppImage)
-            path = os.path.join(target_directory, v[6:])  # Remove "@root/" prefix
-        else:
-            # Default: files go to bin/ directory
-            path = appdirbin(v)
-        
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.isfile(k):
-            shutil.copyfile(k, path)
-        elif os.path.isdir(k):
-            shutil.copytree(k, path)
-        else:
-            sys.exit("Cannot copy archive file '{}'".format(k))
-
-    # Determine the library directory for native modules
-    if os.path.isfile(appdir("usr/lib/liblove.so")):
-        # pfirsich-style AppImages
-        so_target_dir = appdir("usr/lib")
-    elif os.path.isfile(appdir("lib/liblove.so")):
-        # Official AppImages (since 11.4)
-        so_target_dir = appdir("lib/")
-    elif os.path.isfile(appdir("lib/liblove-{}.so".format(config["love_version"]))):
-        # Support for >= 11.5
-        so_target_dir = appdir("lib/")
-    else:
-        sys.exit(
-            "Could not find liblove.so in AppDir. The AppImage has an unknown format."
-        )
-
-    # Shared libraries from config
-    if target in config and "shared_libraries" in config[target]:
-        for f in config[target]["shared_libraries"]:
-            shutil.copy(f, so_target_dir)
-
-    # Extract native Lua modules from .love file to bin/ (same dir as executable)
-    # This is necessary because embedded games' native modules aren't found by package.path
-    extracted_modules = extract_native_modules_from_love(love_file_path, appdirbin(""))
-    if extracted_modules:
-        print(f"Extracted native modules to {appdirbin('')}: {', '.join(extracted_modules)}")
 
     # Rebuild AppImage
     if should_build_artifact(config, target, "appimage", True):

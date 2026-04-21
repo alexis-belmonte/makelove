@@ -9,6 +9,7 @@ from email.utils import formatdate
 import zipfile
 import re
 import importlib
+import importlib.metadata
 
 from .config import get_config, all_targets, init_config_assistant
 from .hooks import execute_hook
@@ -17,7 +18,6 @@ from .jsonfile import JsonFile
 from .windows import build_windows
 from .linux import build_linux
 from .macos import build_macos
-from .lovejs import build_lovejs
 
 all_hooks = ["prebuild", "postbuild"]
 
@@ -31,14 +31,6 @@ def _choices(values):
         return s
 
     return f
-
-
-def files_in_dir(dir_path):
-    ret = []
-    for root, _dirs, files in os.walk(dir_path):
-        for f in files:
-            ret.append(os.path.join(root, f))
-    return ret
 
 
 # Obviously this cannot bump everything, just bump the trailing number
@@ -119,7 +111,23 @@ def git_ls_tree(path=".", visited=None):
     return out
 
 
-def assemble_game_directory(args, config, game_directory):
+def files_in_dir(dir_path):
+    ret = []
+    for root, _dirs, files in os.walk(dir_path):
+        for f in files:
+            ret.append(os.path.join(root, f))
+    return ret
+
+
+def create_love_file(game_directory, love_file_path):
+    love_archive = zipfile.ZipFile(love_file_path, "w")
+    for path in files_in_dir(game_directory):
+        arcname = os.path.normpath(os.path.relpath(path, game_directory))
+        love_archive.write(path, arcname=arcname)
+    love_archive.close()
+
+
+def assemble_game_directory(args, config, game_directory, target=None):
     if os.path.isdir(game_directory):
         shutil.rmtree(game_directory)
     os.makedirs(game_directory)
@@ -140,33 +148,8 @@ def assemble_game_directory(args, config, game_directory):
         else:
             file_list.include(rule)
 
-    # Explicitly add files referenced in archive_files sections to the .love archive
-    # This ensures Lua modules like luasteam.so are available for require() calls
-    def add_archive_file_to_love(source_path):
-        if os.path.isfile(source_path):
-            dest_path = os.path.join(game_directory, os.path.basename(source_path))
-            shutil.copyfile(source_path, dest_path)
-    
-    # Global archive_files
-    if "archive_files" in config:
-        for source_path in config["archive_files"].keys():
-            add_archive_file_to_love(source_path)
-    
-    # Per-target and platform-specific archive_files
-    all_sections = []
-    for target_name in all_targets:
-        if target_name in config and "archive_files" in config[target_name]:
-            all_sections.append(config[target_name]["archive_files"])
-    for platform in ["windows", "macos", "linux"]:
-        if platform in config and "archive_files" in config[platform]:
-            all_sections.append(config[platform]["archive_files"])
-    
-    for section in all_sections:
-        for source_path in section.keys():
-            add_archive_file_to_love(source_path)
-
     if args.verbose:
-        print(".love files:")
+        print("Game files:")
 
     for fname in file_list:
         if args.verbose:
@@ -174,14 +157,6 @@ def assemble_game_directory(args, config, game_directory):
         dest_path = os.path.join(game_directory, fname)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         shutil.copyfile(fname, dest_path)
-
-
-def create_love_file(game_dir, love_file_path):
-    love_archive = zipfile.ZipFile(love_file_path, "w")
-    for path in files_in_dir(game_dir):
-        arcname = os.path.normpath(os.path.relpath(path, game_dir))
-        love_archive.write(path, arcname=arcname)
-    love_archive.close()
 
 
 def get_build_version(args, config):
@@ -244,14 +219,9 @@ def main():
         help="If doing a versioned build, specify this to overwrite a target that was already built.",
     )
     parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="If doing an unversioned build, specify this to not rebuild targets that were already built.",
-    )
-    parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Display more information (files included in love archive)",
+        help="Display more information (files included in game directory)"
     )
     # Restrict version name format somehow? A git refname?
     parser.add_argument(
@@ -281,7 +251,7 @@ def main():
     args = parser.parse_args()
 
     if args.display_version:
-        print("makelove {}".format(importlib.meta.version("makelove")))
+        print("makelove {}".format(importlib.metadata.version("makelove")))
         sys.exit(0)
 
     if not os.path.isfile("main.lua"):
@@ -331,18 +301,14 @@ def main():
     if not "prebuild" in args.disabled_hooks:
         execute_hooks("prebuild", config, version, targets, build_directory)
 
-    love_directory = os.path.join(build_directory, "love")
-    love_file_path = os.path.join(love_directory, "{}.love".format(config["name"]))
-    game_directory = os.path.join(love_directory, "game_directory")
+    for target in targets:
+        print(">> Building target {}".format(target))
 
-    # This hold for both the löve file and the targets below:
-    # If we do a versioned build and reached this place, force/--force
-    # was passed, so we can just delete stuff.
+        game_directory = os.path.join(build_directory, "_tmp_game")
+        love_file_path = os.path.join(build_directory, f"_tmp_{target}.love")
 
-    rebuild_love = version != None or not args.resume
-    if not os.path.isfile(love_file_path) or rebuild_love:
         print("Assembling game directory..")
-        assemble_game_directory(args, config, game_directory)
+        assemble_game_directory(args, config, game_directory, target)
 
         if not os.path.isfile(os.path.join(game_directory, "main.lua")):
             sys.exit(
@@ -350,33 +316,19 @@ def main():
             )
 
         create_love_file(game_directory, love_file_path)
-        print("Created {}".format(love_file_path))
+        shutil.rmtree(game_directory)
 
-        if config.get("keep_game_directory", False):
-            print("Keeping game directory because 'keep_game_directory' is true")
-        else:
-            shutil.rmtree(game_directory)
-    else:
-        print(".love file already exists. Not rebuilding.")
-
-    for target in targets:
-        print(">> Building target {}".format(target))
-
-        target_directory = os.path.join(build_directory, target)
-        # If target_directory is not a directory, let it throw an exception
-        # We can overwrite here
-        if os.path.exists(target_directory):
-            shutil.rmtree(target_directory)
-        os.makedirs(target_directory)
+        platform_target_dir = os.path.join(build_directory, target)
 
         if target == "win32" or target == "win64":
-            build_windows(config, version, target, target_directory, love_file_path)
+            build_windows(config, version, target, platform_target_dir, love_file_path)
         elif target == "appimage":
-            build_linux(config, version, target, target_directory, love_file_path)
+            build_linux(config, version, target, platform_target_dir, love_file_path)
         elif target == "macos":
-            build_macos(config, version, target, target_directory, love_file_path)
-        elif target == "lovejs":
-            build_lovejs(config, version, target, target_directory, love_file_path)
+            build_macos(config, version, target, platform_target_dir, love_file_path)
+
+        if os.path.isfile(love_file_path):
+            os.remove(love_file_path)
 
         print("Target {} complete".format(target))
 

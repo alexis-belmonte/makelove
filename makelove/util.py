@@ -125,13 +125,17 @@ def download_love_binary(version, platform):
             dest_path = os.path.join(cache_path, f"love-{version}-x86_64.AppImage")
             shutil.move(temp_file, dest_path)
             os.chmod(dest_path, 0o755)  # Set execute permissions for AppImage
+        elif platform == "macos":
+            # macOS: keep as love.zip — do NOT extract. Extracting with Python's zipfile
+            # silently drops symlinks inside the .app bundle, making it non-functional.
+            dest_path = os.path.join(cache_path, "love.zip")
+            shutil.move(temp_file, dest_path)
         else:
             # Extract zip file
             with zipfile.ZipFile(temp_file, "r") as zip_ref:
                 zip_ref.extractall(cache_path)
-            
-            # Handle nested directory structure for Windows only
-            # macOS keeps love.zip inside the extracted folder (needed by macos.py)
+
+            # Windows: flatten the single nested directory that LÖVE zips contain
             if platform in ("win32", "win64"):
                 extracted_items = os.listdir(cache_path)
                 if len(extracted_items) == 1:
@@ -214,8 +218,7 @@ def _verify_love_cache(cache_path, platform):
         import glob
         return len(glob.glob(appimage_path)) > 0
     elif platform == "macos":
-        # macOS cache should contain love.zip or extracted contents
-        return os.path.isfile(os.path.join(cache_path, "love.zip")) or                os.path.isdir(os.path.join(cache_path, "love.app"))
+        return os.path.isfile(os.path.join(cache_path, "love.zip"))
     else:
         # Windows - check for .exe file
         exe_exists = any(f.endswith(".exe") for f in os.listdir(cache_path))
@@ -231,6 +234,7 @@ def get_download_url(version, platform):
     """Backward compatibility function - returns just the URL."""
     url, _ = _get_love_download_info(version, platform)
     return url
+
 
 
 def fuse_files(dest_path, *src_paths):
